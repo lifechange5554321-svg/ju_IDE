@@ -1022,7 +1022,7 @@ function renderCell(cell) {
       lineNumbers: true,
       fixedGutter: true,
       inputStyle: "contenteditable",
-      indentUnit: 4, tabSize: 4, indentWithTabs: false,
+      indentUnit: 4, tabSize: 4, indentWithTabs: true,
       electricChars: false,
       autoCloseBrackets: true,
       matchBrackets: true,
@@ -1061,6 +1061,30 @@ function renderCell(cell) {
       clearTimeout(_saveDeb);
       _saveDeb = setTimeout(() => saveNotebookLocal(true), 800);
     });
+    // Auto-show autocomplete on typing (like Acode)
+    let _autoHintTimer = null;
+    editor.on("inputRead", (cm, change) => {
+      // Only trigger on typing letters/underscore/dot
+      if (change.origin !== "+input") return;
+      const typed = change.text[0];
+      if (!typed || typed.length !== 1) return;
+      // Trigger on letters, underscore, dot (for attribute access)
+      if (!/[a-zA-Z_.]/.test(typed)) return;
+      // Don't trigger if completion is already active
+      if (cm.state.completionActive) return;
+      clearTimeout(_autoHintTimer);
+      _autoHintTimer = setTimeout(() => {
+        if (cm.state.completionActive) return;
+        try {
+          cm.showHint({
+            hint: pythonHint,
+            completeSingle: false,
+            closeOnUnfocus: true,
+          });
+        } catch (_) {}
+      }, 250);
+    });
+
     editor.on("blur", () => {
       cell.content = editor.getValue();
       applyAutoTitle(cell);
@@ -1349,8 +1373,149 @@ function simpleMarkdown(src) {
     .replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\n/g,"<br>");
 }
 
+
+// ============================================================
+// Acode-style KeyboardEvent + modifier state
+// (ported from Acode's utils/keyboardEvent.js + quickTools.js)
+// ============================================================
+
+// Acode's makeKeyboardEvent (works on Android WebView)
+function makeKeyboardEvent(type, dict) {
+  try {
+    const ev = new KeyboardEvent(type, dict);
+    if (dict.ctrlKey && !ev.ctrlKey) throw new Error("ctrlKey not set");
+    return ev;
+  } catch (_) {
+    const ev = document.createEvent("KeyboardEvent");
+    try {
+      ev.initKeyboardEvent(
+        type, true, true, window,
+        dict.key || "", 0,
+        !!dict.ctrlKey, !!dict.shiftKey, !!dict.altKey, !!dict.metaKey,
+        false
+      );
+    } catch (_2) {
+      ev.initEvent(type, true, true);
+    }
+    return ev;
+  }
+}
+
+// Acode's dispatch: send key to CodeMirror's contentDOM
+function dispatchToCm(cm, key, ctrl, shift) {
+  try {
+    const input = cm.getInputField();
+    if (!input) return false;
+    const ev = makeKeyboardEvent("keydown", {
+      key, ctrlKey: !!ctrl, shiftKey: !!shift,
+      bubbles: true, cancelable: true,
+    });
+    input.dispatchEvent(ev);
+    return true;
+  } catch (_) { return false; }
+}
+
+// Acode-style hidden input (the key to making Ctrl/Shift work!)
+let _hiddenInput = null;
+function getHiddenInput() {
+  if (_hiddenInput) return _hiddenInput;
+  _hiddenInput = document.createElement("input");
+  _hiddenInput.type = "text";
+  _hiddenInput.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;";
+  _hiddenInput.setAttribute("autocomplete", "off");
+  _hiddenInput.setAttribute("autocorrect", "off");
+  _hiddenInput.setAttribute("autocapitalize", "off");
+  _hiddenInput.setAttribute("spellcheck", "false");
+  document.body.appendChild(_hiddenInput);
+
+  _hiddenInput.addEventListener("input", (e) => {
+    const typed = e.target.value;
+    _hiddenInput.value = "";
+    if (!typed || typed.length > 2) return;
+    const cm = activeEditor || (cells.find(c => c.editor)?.editor);
+    if (!cm) return;
+    const k = typed.length === 1 ? typed : typed;
+    const ctrl = ctrlHeld, shift = shiftHeld;
+    // Reset sticky after one combo (Acode does this too)
+    ctrlHeld = false; shiftHeld = false;
+    document.querySelectorAll("#keybar .kbtn.active").forEach(b => b.classList.remove("active"));
+    // Try dispatch first (Acode-style)
+    const dispatched = dispatchToCm(cm, k, ctrl, shift);
+    // Fallback: direct action
+    if (!dispatched) {
+      if (ctrl) {
+        const lk = k.toLowerCase();
+        if (lk === "a") cm.execCommand("selectAll");
+        else if (lk === "c") { const t = cm.getSelection(); if (t) copyText(t); }
+        else if (lk === "x") { const t = cm.getSelection(); if (t) { copyText(t); cm.replaceSelection(""); } }
+        else if (lk === "v") pasteIntoEditor(cm);
+        else if (lk === "z") cm.undo();
+        else if (lk === "y") cm.redo();
+        else if (lk === "s") { try { saveNotebookFile(); } catch (_) {} }
+      } else if (shift) {
+        cm.replaceSelection(k.toUpperCase());
+      } else {
+        cm.replaceSelection(k);
+      }
+    }
+    // Restore focus to editor
+    try { cm.focus(); } catch (_) {}
+  });
+
+  _hiddenInput.addEventListener("keydown", (e) => {
+    if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Home","End","Tab","Escape","Backspace","Delete"].includes(e.key)) {
+      const cm = activeEditor || (cells.find(c => c.editor)?.editor);
+      if (!cm) return;
+      e.preventDefault();
+      const ctrl = ctrlHeld, shift = shiftHeld;
+      ctrlHeld = false; shiftHeld = false;
+      document.querySelectorAll("#keybar .kbtn.active").forEach(b => b.classList.remove("active"));
+      dispatchToCm(cm, e.key, ctrl, shift);
+    }
+  });
+
+  return _hiddenInput;
+}
+
+// Acode-style reset (like clearModifierState)
+function resetKeybarMods() {
+  ctrlHeld = false;
+  shiftHeld = false;
+  document.querySelectorAll("#keybar .kbtn.active").forEach((b) => b.classList.remove("active"));
+}
+
 function escapeHtml(s) {
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+
+function openFindDialog(cm) {
+  if (!cm) return;
+  const q = window.prompt("Find:", "");
+  if (!q) return;
+  const r = window.prompt("Replace with (leave empty for find-only):", "");
+  const cursor = cm.getSearchCursor(q, cm.getCursor());
+  if (r === null || r === "") {
+    if (cursor.findNext()) {
+      cm.setSelection(cursor.from(), cursor.to());
+      cm.scrollIntoView({from: cursor.from(), to: cursor.to()}, 80);
+      setStatus("Found: " + q, "ready");
+    } else {
+      const fromStart = cm.getSearchCursor(q, {line: 0, ch: 0});
+      if (fromStart.findNext()) {
+        cm.setSelection(fromStart.from(), fromStart.to());
+        cm.scrollIntoView({from: fromStart.from(), to: fromStart.to()}, 80);
+        setStatus("Found (wrapped)", "ready");
+      } else {
+        setStatus("Not found", "error");
+      }
+    }
+    return;
+  }
+  let count = 0;
+  const c2 = cm.getSearchCursor(q);
+  while (c2.findNext()) { c2.replace(r); count++; }
+  setStatus("Replaced " + count + " occurrence(s)", "ready");
 }
 
 async function copyText(text) {
@@ -1369,11 +1534,14 @@ async function copyText(text) {
     ta.value = text;
     ta.style.position = "fixed";
     ta.style.left = "-9999px";
+    ta.style.top = "0";
+    ta.style.opacity = "0";
     document.body.appendChild(ta);
-    ta.focus(); ta.select();
-    document.execCommand("copy");
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
     document.body.removeChild(ta);
-    return true;
+    return ok;
   } catch (_) { return false; }
 }
 
@@ -1767,6 +1935,9 @@ function setupKeybar() {
       ctrlHeld = !ctrlHeld;
       document.querySelectorAll('#keybar [data-key="ctrl"]').forEach((b) => b.classList.toggle("active", ctrlHeld));
       const cm = resolveCm(); if (cm) try { cm.focus(); } catch (_) {}
+      if (ctrlHeld || shiftHeld) {
+        try { getHiddenInput().focus(); } catch (_) {}
+      }
       setStatus(ctrlHeld ? "Ctrl ON — pick key" : "Ctrl off", ctrlHeld ? "busy" : "ready");
       return;
     }
@@ -1774,6 +1945,9 @@ function setupKeybar() {
       shiftHeld = !shiftHeld;
       document.querySelectorAll('#keybar [data-key="shift"]').forEach((b) => b.classList.toggle("active", shiftHeld));
       const cm = resolveCm(); if (cm) try { cm.focus(); } catch (_) {}
+      if (ctrlHeld || shiftHeld) {
+        try { getHiddenInput().focus(); } catch (_) {}
+      }
       setStatus(shiftHeld ? "Shift ON — pick key" : "Shift off", shiftHeld ? "busy" : "ready");
       return;
     }
@@ -1913,6 +2087,7 @@ document.querySelectorAll("#app-menu button").forEach((btn) => {
     if (m === "file-close") closeNotebook();
     if (m === "kernel-restart") restartKernel();
     if (m === "file-save-cell") saveActiveCellFile();
+    if (m === "export-html") exportToHtml();
     if (m === "migrate") migrateAssetsFolder();
   };
 });
@@ -2610,6 +2785,35 @@ window.jideBlockingInput = function(promptText) {
     nameInput.value = n + (fmt.value === "py" ? ".py" : ".ipynb");
   });
 })();
+
+
+function exportToHtml() {
+  if (!hasBridge) { alert("Android only"); return; }
+  flushAllEditors();
+  let html = "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>Notebook</title>";
+  html += "<style>body{font-family:system-ui;background:#0d1117;color:#e6edf3;padding:16px;}";
+  html += ".cell{border:1px solid #30363d;border-radius:8px;margin-bottom:12px;padding:12px;}";
+  html += ".title{font-weight:700;color:#58a6ff;margin-bottom:6px;}";
+  html += ".code{font-family:monospace;background:#1e1e1e;padding:8px;border-radius:6px;white-space:pre-wrap;}";
+  html += ".output{font-family:monospace;background:#0d1117;padding:8px;border-radius:6px;white-space:pre-wrap;margin-top:6px;border-top:1px solid #21262d;}";
+  html += "</style></head><body>";
+  cells.forEach((c) => {
+    html += "<div class='cell'>";
+    if (c.title) html += "<div class='title'>" + escapeHtml(c.title) + "</div>";
+    if (c.type === "code") {
+      html += "<div class='code'>" + escapeHtml(c.content || "") + "</div>";
+      if (c.outputHtml) html += "<div class='output'>" + c.outputHtml + "</div>";
+    } else {
+      html += "<div class='code'>" + escapeHtml(c.content || "") + "</div>";
+    }
+    html += "</div>";
+  });
+  html += "</body></html>";
+  const name = "notebook-export-" + Date.now() + ".html";
+  const path = AndroidBridge.saveUserFile("notebooks/" + name, html);
+  if (path) setStatus("Exported: " + path, "ready");
+  else setStatus("Export failed", "error");
+}
 
 initPyodide();
 

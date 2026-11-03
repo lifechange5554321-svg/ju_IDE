@@ -989,3 +989,14 @@ body.mode-maximized .cell:not(.maximized) {
 .CodeMirror-selected {
   background: rgba(88, 166, 255, 0.35) !important;
 }
+
+/* Indent guides (like Acode) - pure CSS on .cm-tab */
+.cm-tab {
+  background-image: none !important;
+  border-left: 1px dashed rgba(128, 128, 128, 0.4);
+}
+
+/* Active line highlight */
+.CodeMirror-activeline-background {
+  background: rgba(88, 166, 255, 0.08) !important;
+}
