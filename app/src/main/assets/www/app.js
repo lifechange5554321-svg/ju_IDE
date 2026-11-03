@@ -1061,27 +1061,7 @@ function renderCell(cell) {
       clearTimeout(_saveDeb);
       _saveDeb = setTimeout(() => saveNotebookLocal(true), 800);
     });
-    // Auto-show autocomplete on typing (like Acode)
-    let _autoHintTimer = null;
-    editor.on("inputRead", (cm, change) => {
-      // Only trigger on typing letters/underscore/dot
-      if (change.origin !== "+input") return;
-      const typed = change.text[0];
-      if (!typed || typed.length !== 1) return;
-      // Trigger on letters, underscore, dot (for attribute access)
-      if (!/[a-zA-Z_.]/.test(typed)) return;
-      // Don't trigger if completion is already active
-      if (cm.state.completionActive) return;
-      clearTimeout(_autoHintTimer);
-      _autoHintTimer = setTimeout(() => {
-        if (cm.state.completionActive) return;
-        try {
-          cm.showHint({
-            hint: pythonHint,
-            completeSingle: false,
-            closeOnUnfocus: true,
-          });
-        } catch (_) {}
+            } catch (_) {}
       }, 250);
     });
 
@@ -1790,6 +1770,19 @@ async function handleCtxAction(a) {
 }
 
 
+
+// ===== FORCE CLOSE CTX MENU =====
+document.addEventListener("touchstart", (e) => {
+  const ctx = document.getElementById("ctx-menu");
+  if (ctx && !ctx.classList.contains("hidden")) {
+    if (!e.target.closest("#ctx-menu")) hideCtx();
+  }
+}, { passive: true, capture: true });
+document.addEventListener("keydown", (e) => {
+  const ctx = document.getElementById("ctx-menu");
+  if (ctx && !ctx.classList.contains("hidden")) hideCtx();
+}, true);
+
 function wireCtxMenu() {
   const m = document.getElementById("ctx-menu");
   if (!m) return;
@@ -1934,21 +1927,19 @@ function setupKeybar() {
     if (key === "ctrl") {
       ctrlHeld = !ctrlHeld;
       document.querySelectorAll('#keybar [data-key="ctrl"]').forEach((b) => b.classList.toggle("active", ctrlHeld));
-      const cm = resolveCm(); if (cm) try { cm.focus(); } catch (_) {}
-      if (ctrlHeld || shiftHeld) {
-        try { getHiddenInput().focus(); } catch (_) {}
+      if (ctrlHeld) {
+        // وقتی Ctrl فعال شد، یه کلید مجازی A رو شبیه‌سازی نمی‌کنیم،
+        // فقط منتظر می‌مونیم کاربر حرف بعدی رو بزنه.
+        setStatus("Ctrl ON", "busy");
+      } else {
+        setStatus("Ctrl off", "ready");
       }
-      setStatus(ctrlHeld ? "Ctrl ON — pick key" : "Ctrl off", ctrlHeld ? "busy" : "ready");
       return;
     }
     if (key === "shift") {
       shiftHeld = !shiftHeld;
       document.querySelectorAll('#keybar [data-key="shift"]').forEach((b) => b.classList.toggle("active", shiftHeld));
-      const cm = resolveCm(); if (cm) try { cm.focus(); } catch (_) {}
-      if (ctrlHeld || shiftHeld) {
-        try { getHiddenInput().focus(); } catch (_) {}
-      }
-      setStatus(shiftHeld ? "Shift ON — pick key" : "Shift off", shiftHeld ? "busy" : "ready");
+      setStatus(shiftHeld ? "Shift ON" : "Shift off", shiftHeld ? "busy" : "ready");
       return;
     }
 
@@ -2814,6 +2805,27 @@ function exportToHtml() {
   if (path) setStatus("Exported: " + path, "ready");
   else setStatus("Export failed", "error");
 }
+
+
+// ===== Force Ctrl+A/C/V on document when ctrlHeld =====
+document.addEventListener("keydown", (e) => {
+  if (!ctrlHeld) return;
+  const k = (e.key || "").toLowerCase();
+  if (k === "a" || k === "c" || k === "v" || k === "x" || k === "z" || k === "y") {
+    const cm = activeEditor || (cells.find(c => c.editor)?.editor);
+    if (!cm) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (k === "a") cm.execCommand("selectAll");
+    else if (k === "c") copyText(cm.getSelection());
+    else if (k === "x") { copyText(cm.getSelection()); cm.replaceSelection(""); }
+    else if (k === "v") pasteIntoEditor(cm);
+    else if (k === "z") cm.undo();
+    else if (k === "y") cm.redo();
+    ctrlHeld = false;
+    document.querySelectorAll('#keybar [data-key="ctrl"]').forEach((b) => b.classList.remove("active"));
+  }
+}, true);
 
 initPyodide();
 
